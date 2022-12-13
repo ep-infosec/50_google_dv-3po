@@ -1,0 +1,376 @@
+<script>
+  /*
+    * Copyright 2021 Google Inc.
+    *
+    * Licensed under the Apache License, Version 2.0 (the "License");
+    * you may not use this file except in compliance with the License.
+    * You may obtain a copy of the License at
+    *
+    *     http://www.apache.org/licenses/LICENSE-2.0
+    *
+    *     Unless required by applicable law or agreed to in writing, software
+    *     distributed under the License is distributed on an "AS IS" BASIS,
+    *     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    *     See the License for the specific language governing permissions and
+    *     limitations under the License.
+    */
+
+/**
+ * Controller functions for the sidebar UI
+ */
+
+/**
+ * Sets a message to the status field in the sidebar
+ */
+function setStatus(status) {
+  console.log(status);
+  document.getElementById('status').innerHTML = status;
+}
+
+function changeButtonStatus(buttonId, backgroundColor, disabled) {
+  const button = document.getElementById(buttonId);
+  button.disabled = disabled;
+  button.style.backgroundColor = backgroundColor;
+  button.style.borderColor = backgroundColor;
+}
+
+/**
+ * Loads data from DV360 into the sheet
+ */
+function loadFromDV() {
+  setStatus('Loading line items from DV360...');
+  changeButtonStatus('loadFromDV', '#A9A9A9', true,);
+  // Clear the Log tab
+  getLogger().clear().then(function(result) {
+    // Create jobs to be executed
+    var jobs = [
+      {
+        'entity': 'InsertionOrder'
+      },{
+        'entity': 'LineItem'
+      }
+    ];
+
+    // Run jobs
+    return new Runner().run('identifyItemsToLoad', jobs);
+  }).then(function(loadJobs) {
+    return new Runner().run('generateQAReport', [{jobs: loadJobs}]);
+  }).then(function(result) {
+    // Log results
+    console.log(result);
+    return getLogger().log(result)
+  }).then(function(result) {
+    // Change status back to Ready
+    setStatus('The DV360 information has been loaded successfully!');
+    changeButtonStatus('loadFromDV', '#93c47d', false);
+  });
+}
+
+/**
+ * Pushes data to DV360
+ */
+function pushToDV360() {
+  if(confirm("Are you sure you want to push the changes to DV360?")) {
+    setStatus('Pushing to DV360...');
+    changeButtonStatus('pushToDV360', '#A9A9A9', true,);
+    // Clear the Log tab
+    getLogger().clear().then(function(result) {
+      // Create jobs to be executed
+      var jobs = [
+        {
+          'entity': 'LineItem'
+        }
+      ];
+      setStatus('Identifying items to update...');
+      // Run jobs
+      return new Runner().run('pushToDV360', jobs);
+    }).then(function(result) {
+      // Log results
+      console.log("Logging pushToDV360 jobs...");
+      console.log(result);
+      // Change status
+      setStatus('The Brand Safety Controls have been pushed successfully! Please verify them in the UI.');
+      changeButtonStatus('pushToDV360', '#93c47d', false);
+      return getLogger().log(result)
+    });
+  }
+}
+
+/**
+ * Waits for all SDF Download tasks in the jobs to complete
+ *
+ * params: jobs.tasks tasks to check and wait for
+ */
+function waitForSDFTasksCompletion(jobs, wait=5000) {
+  return new Runner().run('refreshSDFTasks', jobs).then(jobs => {
+    var complete = true;
+
+    jobs.forEach(job => {
+      job.tasks.forEach(task => {
+        if(!task.done) {
+          complete = false;
+        }
+      });
+    });
+
+    if(complete) {
+      return jobs;
+    } else {
+      return new Promise(resolve => setTimeout(resolve, wait)).then(() => waitForSDFTasksCompletion(jobs, wait));
+    }
+  });
+}
+
+/**
+ * Loads data from DV using SDFs, which allows for read access to YouTube
+ * related entities
+ */
+function sdfLoad() {
+  setStatus('Loading from DV360');
+
+  var jobs = [{
+    'entity': 'InsertionOrder'
+  }];
+
+  new Runner().run('createSDFTasks', jobs)
+    .then(function(jobs) {
+      setStatus('Waiting for SDFs to be generated');
+      return waitForSDFTasksCompletion(jobs);
+    }).then(jobs => {
+      setStatus('Parsing SDFs and generating report');
+      return new Runner().run('sdfLoad', jobs);
+    }).then(jobs => {
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An Error happened!');
+    });
+}
+
+/**
+ * Clears the feed
+ */
+function clearFeed() {
+  if(confirm("Are you sure you want to clear the feed?")) {
+    setStatus('Clearing feed...');
+    new Runner().run('clear', [{
+      'sheetName': 'QA',
+      'range': 'A2:AZ'
+    }]).then(() => setStatus('Ready'));
+  }
+}
+
+/**
+ * Checks for errors in the jobs list, throws exception if one is found
+ *
+ * params: jobs, list of jobs to check
+ *
+ */
+function checkErrors(jobs) {
+  jobs.forEach(job => {
+    if(job.status == 'ERROR') {
+      throw job.error;
+    }
+  });
+}
+
+/**
+  * Apply Brand Safety Controls to the line items in the QA tab
+*/
+function applyBrandSafetyControlsConfiguration() {
+  setStatus('Applying Brand Safety Controls...');
+  changeButtonStatus('applyBrandSafetyControls', '#A9A9A9', true,);
+  google.script.run.withSuccessHandler(successHandler).withFailureHandler(errorHandler).applyBrandSafetyControlsConfiguration();
+}
+
+function successHandler() {
+  changeButtonStatus('applyBrandSafetyControls', '#93c47d', false);
+  setStatus('The Brand Safety Controls have been applied successfully! Please validate them before pushing to DV360.');
+}
+
+function errorHandler(param) {
+  changeButtonStatus('applyBrandSafetyControls', '#93c47d', false);
+  setStatus('There was an error while applying the Brand Safety Controls.');
+}
+
+/**
+ * Executes the underwriter budget and date validation
+ */
+function underwriter() {
+  setStatus('Reading underwriter segments ...');
+
+  var jobs = [{
+    'entity': 'Underwriter'
+  }];
+
+  new Runner().run('load', jobs)
+    .then(jobs => {
+      checkErrors(jobs);
+      console.log(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus(`An Error happened! ${error}`);
+    });
+}
+
+/**
+ * Loads reports from DV360 based on configurations in the Reports tab
+ */
+function loadReports() {
+  setStatus('Loading ...');
+
+  var job = {
+    'entity': 'Reports'
+  }
+
+  new Runner().run('identifyItemsToLoad', [job]).then(jobs => {
+    var loadJobs = [];
+
+    jobs.forEach(job => loadJobs = loadJobs.concat(job.jobs));
+
+    return new Runner().run('load', loadJobs);
+  }).then(jobs => {
+    checkErrors(jobs);
+    setStatus('Ready');
+  }).catch(error => {
+    console.log(error);
+    setStatus('An error happened');
+  });
+
+}
+
+/**
+ * Based on the data in the report tab, schedule the report triggers to pull
+ * reports automatically on a daily basis
+ */
+function scheduleReportTriggers() {
+  if(confirm("Are you sure you want to schedule daily report pulls for the reports configured in the Report tab?")) {
+    setStatus('Configuring report pulls ...');
+
+    var job = {
+      'entity': 'Reports'
+    }
+
+    new Runner().run('scheduleReportTriggers', [job]).then(jobs => {
+      checkErrors(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An error happened');
+    });
+  }
+}
+
+/**
+ * Forces Underwriter to reload advertisers and budget segments in the next
+ * scheduled execution
+ */
+function forceReload() {
+  if(confirm("Are you sure you want Underwriter to fully reload advertisers and budget segments on the next scheduled execution?")) {
+
+    setStatus('Preparing full reload ...');
+
+    var job = {
+    }
+
+    new Runner().run('setupFullReload', [job]).then(jobs => {
+      checkErrors(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An error happened');
+    });
+  }
+}
+
+/**
+ * Loads the Advertiser tab based on data in the Underwriter tab
+ */
+function loadAdvertisers() {
+  if(confirm("Are you sure you want to reload the data in the Advertisers tab?")) {
+
+    setStatus('Loading Advertisers ...');
+
+    var job = {
+      'entity': 'Advertiser',
+      'incremental': false
+    }
+
+    new Runner().run('load', [job]).then(jobs => {
+      checkErrors(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An error happened');
+    });
+  }
+}
+
+/**
+ * Loads the Budget Segment tab based on data in the Advertiser tab
+ */
+function loadBudgetSegments() {
+  if(confirm("Are you sure you want to reload the data in the Budget Segments tab?")) {
+
+    setStatus('Loading Budget Segments ...');
+
+    var job = {
+      'entity': 'Budget Segment',
+      'incremental': false
+    }
+
+    new Runner().run('load', [job]).then(jobs => {
+      checkErrors(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An error happened');
+    });
+  }
+}
+
+/**
+ * Sets up underwiter trigers to run every 5 minutes
+ */
+function setupUnderwriterTriggers() {
+  if(confirm("Are you sure you want to setup Underwriter to run every 5 minutes?")) {
+
+    setStatus('Setting up Underwriter triggers ...');
+
+    var job = {
+      'entity': 'Advertiser'
+    }
+
+    new Runner().run('setupUnderwriterTriggers', [job]).then(jobs => {
+      checkErrors(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An error happened');
+    });
+  }
+}
+
+/**
+ * Deletes all scheduled project triggers
+ */
+function deleteAllTriggers() {
+  if(confirm("Are you sure you want to stop Underwriter and report pulls?")) {
+
+    setStatus('Deleting triggers ...');
+
+    var job = {
+    }
+
+    new Runner().run('deleteAllTriggers', [job]).then(jobs => {
+      checkErrors(jobs);
+      setStatus('Ready');
+    }).catch(error => {
+      console.log(error);
+      setStatus('An error happened');
+    });
+  }
+}
+
+</script>
